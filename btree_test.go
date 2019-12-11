@@ -75,6 +75,59 @@ func allrev(t *BTree) (out []Item) {
 
 var btreeDegree = flag.Int("degree", 32, "B-Tree degree")
 
+func validateNode(t *testing.T, n *node, prev Item, prevHasSuccessor bit) (bool, Item, bit) {
+	var (
+		ok     bool
+		issues int
+	)
+	for i := 0; i <= len(n.items); i++ {
+		if i < len(n.children) {
+			ok, prev, prevHasSuccessor = validateNode(t, n.children[i], prev, prevHasSuccessor)
+			if !ok {
+				issues++
+			}
+			if n.childIsDense.bitAt(i) != n.children[i].isDense() {
+				t.Logf("density metadata inconsistent")
+				issues++
+			}
+		}
+		if i < len(n.items) {
+			if prev != nil {
+				if prevHasSuccessor != 0 {
+					if !prev.Predecessor(n.items[i]) {
+						t.Logf("metadata says %s has successor, but it doesn't", prev)
+						t.Logf("following item: %s, @%d", n.items[i], i)
+						issues++
+					}
+				} else {
+					if prev.Predecessor(n.items[i]) {
+						t.Logf("metadata says %s doesn't have a successor, but it does", prev)
+						t.Logf("following item: %s, @%d", n.items[i], i)
+						issues++
+					}
+				}
+			}
+			prev = n.items[i]
+			prevHasSuccessor = n.itemHasSuccessor.bitAt(i)
+		}
+	}
+	return issues == 0, prev, prevHasSuccessor
+}
+
+func validateTree(t *testing.T, tr *BTree) {
+	if tr.root == nil {
+		return
+	}
+	ok, item, itemHasSuccessor := validateNode(t, tr.root, nil, 0)
+	if item != nil && itemHasSuccessor != 0 {
+		t.Logf("metadata says %s has successor, but it doesn't", item)
+		ok = false
+	}
+	if !ok {
+		t.Fatalf("validation failed, len %d", tr.Len())
+	}
+}
+
 func TestBTree(t *testing.T) {
 	tr := New(*btreeDegree)
 	const treeSize = 10000
@@ -89,11 +142,13 @@ func TestBTree(t *testing.T) {
 			if x := tr.ReplaceOrInsert(item); x != nil {
 				t.Fatal("insert found item", item)
 			}
+			validateTree(t, tr)
 		}
 		for _, item := range perm(treeSize) {
 			if x := tr.ReplaceOrInsert(item); x == nil {
 				t.Fatal("insert didn't find item", item)
 			}
+			validateTree(t, tr)
 		}
 		if min, want := tr.Min(), Item(Int(0)); min != want {
 			t.Fatalf("min: want %+v, got %+v", want, min)
@@ -117,6 +172,7 @@ func TestBTree(t *testing.T) {
 			if x := tr.Delete(item); x == nil {
 				t.Fatalf("didn't find %v", item)
 			}
+			validateTree(t, tr)
 		}
 		if got = all(tr); len(got) > 0 {
 			t.Fatalf("some left!: %v", got)
@@ -161,9 +217,11 @@ func TestDeleteMin(t *testing.T) {
 	for _, v := range perm(100) {
 		tr.ReplaceOrInsert(v)
 	}
+	validateTree(t, tr)
 	var got []Item
 	for v := tr.DeleteMin(); v != nil; v = tr.DeleteMin() {
 		got = append(got, v)
+		validateTree(t, tr)
 	}
 	if want := rang(100); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ascendrange:\n got: %v\nwant: %v", got, want)
@@ -175,9 +233,11 @@ func TestDeleteMax(t *testing.T) {
 	for _, v := range perm(100) {
 		tr.ReplaceOrInsert(v)
 	}
+	validateTree(t, tr)
 	var got []Item
 	for v := tr.DeleteMax(); v != nil; v = tr.DeleteMax() {
 		got = append(got, v)
+		validateTree(t, tr)
 	}
 	// Reverse our list.
 	for i := 0; i < len(got)/2; i++ {
@@ -339,6 +399,49 @@ func TestDescendGreaterThan(t *testing.T) {
 	})
 	if want := rangrev(100)[:50]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("descendgreaterthan:\n got: %v\nwant: %v", got, want)
+	}
+}
+
+func TestFirstWithoutSuccessor(t *testing.T) {
+	tr := New(*btreeDegree)
+	if item := tr.FirstWithoutSuccessor(Int(0)); item != nil {
+		t.Fatalf("firstwithoutsucessor:\nnon-nil result on empty tree\n")
+	}
+	for i := 0; i < 1000; i++ {
+		tr.ReplaceOrInsert(Int(i))
+	}
+	for i := 0; i < 1000; i++ {
+		if item := tr.FirstWithoutSuccessor(Int(i)); item == nil || item.(Int) != 999 {
+			t.Fatalf("firstwithoutsucessor:\nexpected 999, got %s\n", item)
+		}
+	}
+	if item := tr.FirstWithoutSuccessor(Int(-1)); item != nil {
+		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %s\n", item)
+	}
+	if item := tr.FirstWithoutSuccessor(Int(1000)); item != nil {
+		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %s\n", item)
+	}
+	tr.Delete(Int(100))
+	tr.Delete(Int(110))
+	tr.Delete(Int(111))
+	for i := -1; i < 1020; i++ {
+		var expected Item
+		switch {
+		case i >= 0 && i < 100:
+			expected = Int(99)
+		case i > 100 && i < 110:
+			expected = Int(109)
+		case i > 111 && i < 1000:
+			expected = Int(999)
+		}
+		item := tr.FirstWithoutSuccessor(Int(i))
+		if expected != nil {
+			if item == nil || item.(Int) != expected {
+				t.Fatalf("firstwithoutsucessor:\nexpected %d, got %s\n", expected, item)
+			}
+		} else if item != nil {
+			t.Fatalf("firstwithoutsucessor:\nexpected %d, got %s\n", expected, item)
+		}
 	}
 }
 
@@ -660,6 +763,7 @@ func cloneTest(t *testing.T, b *BTree, start int, p []Item, wg *sync.WaitGroup, 
 			go cloneTest(t, b.Clone(), i+1, p, wg, trees, lock)
 		}
 	}
+	validateTree(t, b)
 	wg.Done()
 }
 

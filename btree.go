@@ -50,7 +50,6 @@ package btree
 import (
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -189,9 +188,15 @@ func (s *items) truncate(index int) {
 // list.  'found' is true if the item already exists in the list at the given
 // index.
 func (s items) find(item Item) (index int, found bool) {
-	i := sort.Search(len(s), func(i int) bool {
-		return item.Less(s[i])
-	})
+	i, j := 0, len(s)
+	for i < j {
+		h := int(uint(i+j) >> 1) // avoid overflow when computing h
+		if item.Less(s[h]) {
+			j = h
+		} else {
+			i = h + 1
+		}
+	}
 	if i > 0 && !s[i-1].Less(item) {
 		return i - 1, true
 	}

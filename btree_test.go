@@ -34,7 +34,7 @@ func init() {
 // perm returns a random permutation of n Int items in the range [0, n).
 func perm(n int) (out []Item) {
 	for _, v := range rand.Perm(n) {
-		out = append(out, Int(v))
+		out = append(out, makeItem(v))
 	}
 	return
 }
@@ -42,7 +42,7 @@ func perm(n int) (out []Item) {
 // rang returns an ordered list of Int items in the range [0, n).
 func rang(n int) (out []Item) {
 	for i := 0; i < n; i++ {
-		out = append(out, Int(i))
+		out = append(out, makeItem(i))
 	}
 	return
 }
@@ -59,7 +59,7 @@ func all(t *BTree) (out []Item) {
 // rangerev returns a reversed ordered list of Int items in the range [0, n).
 func rangrev(n int) (out []Item) {
 	for i := n - 1; i >= 0; i-- {
-		out = append(out, Int(i))
+		out = append(out, makeItem(i))
 	}
 	return
 }
@@ -80,7 +80,7 @@ func validateNode(t *testing.T, n *node, prev Item, prevHasSuccessor bit) (bool,
 		ok     bool
 		issues int
 	)
-	for i := 0; i <= len(n.items); i++ {
+	for i := 0; i <= n.items.len(); i++ {
 		if i < len(n.children) {
 			ok, prev, prevHasSuccessor = validateNode(t, n.children[i], prev, prevHasSuccessor)
 			if !ok {
@@ -91,23 +91,23 @@ func validateNode(t *testing.T, n *node, prev Item, prevHasSuccessor bit) (bool,
 				issues++
 			}
 		}
-		if i < len(n.items) {
+		if i < n.items.len() {
 			if prev != nil {
 				if prevHasSuccessor != 0 {
-					if !prev.Predecessor(n.items[i]) {
-						t.Logf("metadata says %s has successor, but it doesn't", prev)
-						t.Logf("following item: %s, @%d", n.items[i], i)
+					if getInt(prev)+1 != getInt(n.items.get(i)) {
+						t.Logf("metadata says %v has successor, but it doesn't", prev)
+						t.Logf("following item: %v, @%d", n.items.get(i), i)
 						issues++
 					}
 				} else {
-					if prev.Predecessor(n.items[i]) {
-						t.Logf("metadata says %s doesn't have a successor, but it does", prev)
-						t.Logf("following item: %s, @%d", n.items[i], i)
+					if getInt(prev)+1 == getInt(n.items.get(i)) {
+						t.Logf("metadata says %v doesn't have a successor, but it does", prev)
+						t.Logf("following item: %v, @%d", n.items.get(i), i)
 						issues++
 					}
 				}
 			}
-			prev = n.items[i]
+			prev = n.items.get(i)
 			prevHasSuccessor = n.itemHasSuccessor.bitAt(i)
 		}
 	}
@@ -120,7 +120,7 @@ func validateTree(t *testing.T, tr *BTree) {
 	}
 	ok, item, itemHasSuccessor := validateNode(t, tr.root, nil, 0)
 	if item != nil && itemHasSuccessor != 0 {
-		t.Logf("metadata says %s has successor, but it doesn't", item)
+		t.Logf("metadata says %v has successor, but it doesn't", item)
 		ok = false
 	}
 	if !ok {
@@ -150,10 +150,10 @@ func TestBTree(t *testing.T) {
 			}
 			validateTree(t, tr)
 		}
-		if min, want := tr.Min(), Item(Int(0)); min != want {
+		if min, want := tr.Min(), makeItem(0); getInt(min) != getInt(want) {
 			t.Fatalf("min: want %+v, got %+v", want, min)
 		}
-		if max, want := tr.Max(), Item(Int(treeSize-1)); max != want {
+		if max, want := tr.Max(), makeItem(treeSize-1); getInt(max) != getInt(want) {
 			t.Fatalf("max: want %+v, got %+v", want, max)
 		}
 		got := all(tr)
@@ -180,18 +180,18 @@ func TestBTree(t *testing.T) {
 	}
 }
 
-func ExampleBTree() {
+func _ExampleBTree() {
 	tr := New(*btreeDegree)
-	for i := Int(0); i < 10; i++ {
-		tr.ReplaceOrInsert(i)
+	for i := 0; i < 10; i++ {
+		tr.ReplaceOrInsert(makeItem(i))
 	}
 	fmt.Println("len:       ", tr.Len())
-	fmt.Println("get3:      ", tr.Get(Int(3)))
-	fmt.Println("get100:    ", tr.Get(Int(100)))
-	fmt.Println("del4:      ", tr.Delete(Int(4)))
-	fmt.Println("del100:    ", tr.Delete(Int(100)))
-	fmt.Println("replace5:  ", tr.ReplaceOrInsert(Int(5)))
-	fmt.Println("replace100:", tr.ReplaceOrInsert(Int(100)))
+	fmt.Println("get3:      ", tr.Get(makeItem(3)))
+	fmt.Println("get100:    ", tr.Get(makeItem(100)))
+	fmt.Println("del4:      ", tr.Delete(makeItem(4)))
+	fmt.Println("del100:    ", tr.Delete(makeItem(100)))
+	fmt.Println("replace5:  ", tr.ReplaceOrInsert(makeItem(5)))
+	fmt.Println("replace100:", tr.ReplaceOrInsert(makeItem(100)))
 	fmt.Println("min:       ", tr.Min())
 	fmt.Println("delmin:    ", tr.DeleteMin())
 	fmt.Println("max:       ", tr.Max())
@@ -254,7 +254,7 @@ func TestAscendRange(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.AscendRange(Int(40), Int(60), func(a Item) bool {
+	tr.AscendRange(makeItem(40), makeItem(60), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -262,8 +262,8 @@ func TestAscendRange(t *testing.T) {
 		t.Fatalf("ascendrange:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.AscendRange(Int(40), Int(60), func(a Item) bool {
-		if a.(Int) > 50 {
+	tr.AscendRange(makeItem(40), makeItem(60), func(a Item) bool {
+		if getInt(a) > 50 {
 			return false
 		}
 		got = append(got, a)
@@ -280,7 +280,7 @@ func TestDescendRange(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.DescendRange(Int(60), Int(40), func(a Item) bool {
+	tr.DescendRange(makeItem(60), makeItem(40), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -288,8 +288,8 @@ func TestDescendRange(t *testing.T) {
 		t.Fatalf("descendrange:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.DescendRange(Int(60), Int(40), func(a Item) bool {
-		if a.(Int) < 50 {
+	tr.DescendRange(makeItem(60), makeItem(40), func(a Item) bool {
+		if getInt(a) < 50 {
 			return false
 		}
 		got = append(got, a)
@@ -305,7 +305,7 @@ func TestAscendLessThan(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.AscendLessThan(Int(60), func(a Item) bool {
+	tr.AscendLessThan(makeItem(60), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -313,8 +313,8 @@ func TestAscendLessThan(t *testing.T) {
 		t.Fatalf("ascendrange:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.AscendLessThan(Int(60), func(a Item) bool {
-		if a.(Int) > 50 {
+	tr.AscendLessThan(makeItem(60), func(a Item) bool {
+		if getInt(a) > 50 {
 			return false
 		}
 		got = append(got, a)
@@ -331,7 +331,7 @@ func TestDescendLessOrEqual(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.DescendLessOrEqual(Int(40), func(a Item) bool {
+	tr.DescendLessOrEqual(makeItem(40), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -339,8 +339,8 @@ func TestDescendLessOrEqual(t *testing.T) {
 		t.Fatalf("descendlessorequal:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.DescendLessOrEqual(Int(60), func(a Item) bool {
-		if a.(Int) < 50 {
+	tr.DescendLessOrEqual(makeItem(60), func(a Item) bool {
+		if getInt(a) < 50 {
 			return false
 		}
 		got = append(got, a)
@@ -356,7 +356,7 @@ func TestAscendGreaterOrEqual(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.AscendGreaterOrEqual(Int(40), func(a Item) bool {
+	tr.AscendGreaterOrEqual(makeItem(40), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -364,8 +364,8 @@ func TestAscendGreaterOrEqual(t *testing.T) {
 		t.Fatalf("ascendrange:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.AscendGreaterOrEqual(Int(40), func(a Item) bool {
-		if a.(Int) > 50 {
+	tr.AscendGreaterOrEqual(makeItem(40), func(a Item) bool {
+		if getInt(a) > 50 {
 			return false
 		}
 		got = append(got, a)
@@ -382,7 +382,7 @@ func TestDescendGreaterThan(t *testing.T) {
 		tr.ReplaceOrInsert(v)
 	}
 	var got []Item
-	tr.DescendGreaterThan(Int(40), func(a Item) bool {
+	tr.DescendGreaterThan(makeItem(40), func(a Item) bool {
 		got = append(got, a)
 		return true
 	})
@@ -390,8 +390,8 @@ func TestDescendGreaterThan(t *testing.T) {
 		t.Fatalf("descendgreaterthan:\n got: %v\nwant: %v", got, want)
 	}
 	got = got[:0]
-	tr.DescendGreaterThan(Int(40), func(a Item) bool {
-		if a.(Int) < 50 {
+	tr.DescendGreaterThan(makeItem(40), func(a Item) bool {
+		if getInt(a) < 50 {
 			return false
 		}
 		got = append(got, a)
@@ -404,48 +404,48 @@ func TestDescendGreaterThan(t *testing.T) {
 
 func TestFirstWithoutSuccessor(t *testing.T) {
 	tr := New(*btreeDegree)
-	if item := tr.FirstWithoutSuccessor(Int(0)); item != nil {
+	if item := tr.FirstWithoutSuccessor(makeItem(0)); item != nil {
 		t.Fatalf("firstwithoutsucessor:\nnon-nil result on empty tree\n")
 	}
 	for i := 0; i < 1000; i++ {
-		tr.ReplaceOrInsert(Int(i))
+		tr.ReplaceOrInsert(makeItem(i))
 	}
 	for i := 0; i < 1000; i++ {
-		if item := tr.FirstWithoutSuccessor(Int(i)); item == nil || item.(Int) != 999 {
-			t.Fatalf("firstwithoutsucessor:\nexpected 999, got %s\n", item)
+		if item := tr.FirstWithoutSuccessor(makeItem(i)); item == nil || getInt(item) != 999 {
+			t.Fatalf("firstwithoutsucessor:\nexpected 999, got %v\n", item)
 		}
 	}
-	if item := tr.FirstWithoutSuccessor(Int(-1)); item != nil {
-		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %s\n", item)
+	if item := tr.FirstWithoutSuccessor(makeItem(-1)); item != nil {
+		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %v\n", item)
 	}
-	if item := tr.FirstWithoutSuccessor(Int(1000)); item != nil {
-		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %s\n", item)
+	if item := tr.FirstWithoutSuccessor(makeItem(1000)); item != nil {
+		t.Fatalf("firstwithoutsucessor:\nexpected nil, got %v\n", item)
 	}
-	tr.Delete(Int(100))
-	tr.Delete(Int(110))
-	tr.Delete(Int(111))
+	tr.Delete(makeItem(100))
+	tr.Delete(makeItem(110))
+	tr.Delete(makeItem(111))
 	for i := -1; i < 1020; i++ {
 		var expected Item
 		switch {
 		case i >= 0 && i < 100:
-			expected = Int(99)
+			expected = makeItem(99)
 		case i > 100 && i < 110:
-			expected = Int(109)
+			expected = makeItem(109)
 		case i > 111 && i < 1000:
-			expected = Int(999)
+			expected = makeItem(999)
 		}
-		item := tr.FirstWithoutSuccessor(Int(i))
+		item := tr.FirstWithoutSuccessor(makeItem(i))
 		if expected != nil {
-			if item == nil || item.(Int) != expected {
-				t.Fatalf("firstwithoutsucessor:\nexpected %d, got %s\n", expected, item)
+			if item == nil || getInt(item) != getInt(expected) {
+				t.Fatalf("firstwithoutsucessor:\nexpected %v, got %v\n", expected, item)
 			}
 		} else if item != nil {
-			t.Fatalf("firstwithoutsucessor:\nexpected %d, got %s\n", expected, item)
+			t.Fatalf("firstwithoutsucessor:\nexpected %v, got %v\n", expected, item)
 		}
 	}
 }
 
-const benchmarkTreeSize = 10000
+const benchmarkTreeSize = 1000000
 
 func BenchmarkInsert(b *testing.B) {
 	b.StopTimer()
@@ -475,7 +475,7 @@ func BenchmarkSeek(b *testing.B) {
 	b.StartTimer()
 
 	for i := 0; i < b.N; i++ {
-		tr.AscendGreaterOrEqual(Int(i%size), func(i Item) bool { return false })
+		tr.AscendGreaterOrEqual(makeItem(i%size), func(i Item) bool { return false })
 	}
 }
 
@@ -490,6 +490,21 @@ func BenchmarkDeleteInsert(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		tr.Delete(insertP[i%benchmarkTreeSize])
 		tr.ReplaceOrInsert(insertP[i%benchmarkTreeSize])
+	}
+}
+
+func BenchmarkDeleteInsertMap(b *testing.B) {
+	b.StopTimer()
+	insertP := perm(benchmarkTreeSize)
+	m := make(map[int]Item)
+	for _, item := range insertP {
+		m[getInt(item)] = item
+	}
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		item := insertP[i%benchmarkTreeSize]
+		delete(m, getInt(item))
+		m[getInt(item)] = item
 	}
 }
 
@@ -603,7 +618,7 @@ func (a byInts) Len() int {
 }
 
 func (a byInts) Less(i, j int) bool {
-	return a[i].(Int) < a[j].(Int)
+	return getInt(a[i]) < getInt(a[j])
 }
 
 func (a byInts) Swap(i, j int) {
@@ -621,8 +636,8 @@ func BenchmarkAscend(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		j := 0
 		tr.Ascend(func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j++
 			return true
@@ -641,8 +656,8 @@ func BenchmarkDescend(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		j := len(arr) - 1
 		tr.Descend(func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j--
 			return true
@@ -659,9 +674,9 @@ func BenchmarkAscendRange(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		j := 100
-		tr.AscendRange(Int(100), arr[len(arr)-100], func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+		tr.AscendRange(makeItem(100), arr[len(arr)-100], func(item Item) bool {
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j++
 			return true
@@ -682,9 +697,9 @@ func BenchmarkDescendRange(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		j := len(arr) - 100
-		tr.DescendRange(arr[len(arr)-100], Int(100), func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+		tr.DescendRange(arr[len(arr)-100], makeItem(100), func(item Item) bool {
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j--
 			return true
@@ -705,9 +720,9 @@ func BenchmarkAscendGreaterOrEqual(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		j := 100
 		k := 0
-		tr.AscendGreaterOrEqual(Int(100), func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+		tr.AscendGreaterOrEqual(makeItem(100), func(item Item) bool {
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j++
 			k++
@@ -733,8 +748,8 @@ func BenchmarkDescendLessOrEqual(b *testing.B) {
 		j := len(arr) - 100
 		k := len(arr)
 		tr.DescendLessOrEqual(arr[len(arr)-100], func(item Item) bool {
-			if item.(Int) != arr[j].(Int) {
-				b.Fatalf("mismatch: expected: %v, got %v", arr[j].(Int), item.(Int))
+			if getInt(item) != getInt(arr[j]) {
+				b.Fatalf("mismatch: expected: %v, got %v", arr[j], item)
 			}
 			j--
 			k--

@@ -54,26 +54,11 @@ import (
 	"sync"
 )
 
-// Item represents a single object in the tree.
-type Item interface {
-	// Less tests whether the current item is less than the given argument.
-	//
-	// This must provide a strict weak ordering.
-	// If !a.Less(b) && !b.Less(a), we treat this to mean a == b (i.e. we can only
-	// hold one of either a or b in the tree).
-	Less(than Item) bool
-
-	// Predecessor tests whether the current item is the max value less
-	// than the given argument.
-	Predecessor(of Item) bool
-}
-
 const (
 	DefaultFreeListSize = 32
 )
 
 var (
-	nilItems    = make(items, 16)
 	nilChildren = make(children, 16)
 )
 
@@ -142,67 +127,6 @@ func NewWithFreeList(degree int, f *FreeList) *BTree {
 	}
 }
 
-// items stores items in a node.
-type items []Item
-
-// insertAt inserts a value into the given index, pushing all subsequent values
-// forward.
-func (s *items) insertAt(index int, item Item) {
-	*s = append(*s, nil)
-	if index < len(*s) {
-		copy((*s)[index+1:], (*s)[index:])
-	}
-	(*s)[index] = item
-}
-
-// removeAt removes a value at a given index, pulling all subsequent values
-// back.
-func (s *items) removeAt(index int) Item {
-	item := (*s)[index]
-	copy((*s)[index:], (*s)[index+1:])
-	(*s)[len(*s)-1] = nil
-	*s = (*s)[:len(*s)-1]
-	return item
-}
-
-// pop removes and returns the last element in the list.
-func (s *items) pop() (out Item) {
-	index := len(*s) - 1
-	out = (*s)[index]
-	(*s)[index] = nil
-	*s = (*s)[:index]
-	return
-}
-
-// truncate truncates this instance at index so that it contains only the
-// first index items. index must be less than or equal to length.
-func (s *items) truncate(index int) {
-	var toClear items
-	*s, toClear = (*s)[:index], (*s)[index:]
-	for len(toClear) > 0 {
-		toClear = toClear[copy(toClear, nilItems):]
-	}
-}
-
-// find returns the index where the given item should be inserted into this
-// list.  'found' is true if the item already exists in the list at the given
-// index.
-func (s items) find(item Item) (index int, found bool) {
-	i, j := 0, len(s)
-	for i < j {
-		h := int(uint(i+j) >> 1) // avoid overflow when computing h
-		if item.Less(s[h]) {
-			j = h
-		} else {
-			i = h + 1
-		}
-	}
-	if i > 0 && !s[i-1].Less(item) {
-		return i - 1, true
-	}
-	return i, false
-}
-
 // children stores child nodes in a node.
 type children []*node
 
@@ -264,12 +188,11 @@ func (s *children) truncate(index int) {
 //   in the tree.
 //
 type node struct {
-	items    items
-	children children
-	cow      *copyOnWriteContext
-
+	cow              *copyOnWriteContext
+	children         children
 	itemHasSuccessor bitmask
 	childIsDense     bitmask
+	items            items
 }
 
 func (n *node) mutableFor(cow *copyOnWriteContext) *node {
@@ -277,12 +200,7 @@ func (n *node) mutableFor(cow *copyOnWriteContext) *node {
 		return n
 	}
 	out := cow.newNode()
-	if cap(out.items) >= len(n.items) {
-		out.items = out.items[:len(n.items)]
-	} else {
-		out.items = make(items, len(n.items), cap(n.items))
-	}
-	copy(out.items, n.items)
+	out.items.assign(&n.items)
 	// Copy children
 	if cap(out.children) >= len(n.children) {
 		out.children = out.children[:len(n.children)]
@@ -302,7 +220,7 @@ func (n *node) mutableChild(i int) *node {
 }
 
 func (n *node) isDense() bit {
-	if n.itemHasSuccessor.firstClearBitIndex(0) < len(n.items) {
+	if n.itemHasSuccessor.firstClearBitIndex(0) < n.items.len() {
 		return 0
 	}
 	if n.childIsDense.firstClearBitIndex(0) < len(n.children) {
@@ -315,9 +233,9 @@ func (n *node) isDense() bit {
 // and this function returns the item that existed at that index and a new node
 // containing all items/children after it.
 func (n *node) split(i int) (Item, bit, *node) {
-	item := n.items[i]
+	item := n.items.get(i)
 	next := n.cow.newNode()
-	next.items = append(next.items, n.items[i+1:]...)
+	next.items.append(&n.items, i+1)
 	next.itemHasSuccessor = n.itemHasSuccessor.bitsAt(i + 1)
 	n.items.truncate(i)
 	if len(n.children) > 0 {
@@ -331,7 +249,7 @@ func (n *node) split(i int) (Item, bit, *node) {
 // maybeSplitChild checks if a child should be split, and if so splits it.
 // Returns whether or not a split occurred.
 func (n *node) maybeSplitChild(i, maxItems int) bool {
-	if len(n.children[i].items) < maxItems {
+	if n.children[i].items.len() < maxItems {
 		return false
 	}
 	first := n.mutableChild(i)
@@ -350,14 +268,14 @@ func (n *node) maybeSplitChild(i, maxItems int) bool {
 func (n *node) insert(item Item, maxItems int, hasSuccessor bit) Item {
 	i, found := n.items.find(item)
 	if found {
-		out := n.items[i]
-		n.items[i] = item
+		out := n.items.get(i)
+		n.items.set(i, item)
 		return out
 	}
-	if i > 0 && n.items[i-1].Predecessor(item) {
+	if i > 0 && n.items.predecessor(i-1, item) {
 		n.itemHasSuccessor.setBitAt(i-1, 1)
 	}
-	if i < len(n.items) && item.Predecessor(n.items[i]) {
+	if i < n.items.len() && n.items.successor(i, item) {
 		hasSuccessor = 1
 	}
 	if len(n.children) == 0 {
@@ -366,21 +284,21 @@ func (n *node) insert(item Item, maxItems int, hasSuccessor bit) Item {
 		return nil
 	}
 	if n.maybeSplitChild(i, maxItems) {
-		inTree := n.items[i]
+		inTree := n.items.get(i)
 		switch {
-		case item.Less(inTree):
-			if item.Predecessor(inTree) {
+		case less(item, inTree):
+			if n.items.successor(i, item) {
 				hasSuccessor = 1
 			}
 			// no change, we want first split node
-		case inTree.Less(item):
-			if inTree.Predecessor(item) {
+		case less(inTree, item):
+			if n.items.predecessor(i, item) {
 				n.itemHasSuccessor.setBitAt(i, 1)
 			}
 			i++ // we want second split node
 		default:
-			out := n.items[i]
-			n.items[i] = item
+			out := n.items.get(i)
+			n.items.set(i, item)
 			return out
 		}
 	}
@@ -393,7 +311,7 @@ func (n *node) insert(item Item, maxItems int, hasSuccessor bit) Item {
 func (n *node) get(key Item) Item {
 	i, found := n.items.find(key)
 	if found {
-		return n.items[i]
+		return n.items.get(i)
 	} else if len(n.children) > 0 {
 		return n.children[i].get(key)
 	}
@@ -407,7 +325,7 @@ func (n *node) firstWithoutSuccessor(key Item) (bool, Item) {
 	switch {
 	case found:
 		if n.itemHasSuccessor.bitAt(i) == 0 {
-			return true, n.items[i]
+			return true, n.items.get(i)
 		}
 		i++
 	case len(n.children) == 0:
@@ -418,7 +336,7 @@ func (n *node) firstWithoutSuccessor(key Item) (bool, Item) {
 			return true, out
 		}
 		i++
-	case key.Less(min(n.children[i])):
+	case less(key, min(n.children[i])):
 		return true, nil
 	}
 	out := n.firstWithoutSuccessorAt(i)
@@ -433,8 +351,8 @@ func (n *node) firstWithoutSuccessorAt(i int) Item {
 	if firstSparseChild <= firstItemWithoutSuccessor && firstSparseChild < len(n.children) {
 		return n.children[firstSparseChild].firstWithoutSuccessorAt(0)
 	}
-	if firstItemWithoutSuccessor < len(n.items) {
-		return n.items[firstItemWithoutSuccessor]
+	if firstItemWithoutSuccessor < n.items.len() {
+		return n.items.get(firstItemWithoutSuccessor)
 	}
 	return nil
 }
@@ -447,10 +365,10 @@ func min(n *node) Item {
 	for len(n.children) > 0 {
 		n = n.children[0]
 	}
-	if len(n.items) == 0 {
+	if n.items.len() == 0 {
 		return nil
 	}
-	return n.items[0]
+	return n.items.get(0)
 }
 
 // max returns the last item in the subtree.
@@ -461,10 +379,10 @@ func max(n *node) Item {
 	for len(n.children) > 0 {
 		n = n.children[len(n.children)-1]
 	}
-	if len(n.items) == 0 {
+	if n.items.len() == 0 {
 		return nil
 	}
-	return n.items[len(n.items)-1]
+	return n.items.get(n.items.len() - 1)
 }
 
 // toRemove details what item to remove in a node.remove call.
@@ -485,12 +403,12 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 	switch 0xf & typ { // coerce detachMax -> removeMax
 	case removeMax:
 		if len(n.children) == 0 {
-			if typ != detachMax && len(n.items) > 1 {
-				n.itemHasSuccessor.setBitAt(len(n.items)-2, 0)
+			if typ != detachMax && n.items.len() > 1 {
+				n.itemHasSuccessor.setBitAt(n.items.len()-2, 0)
 			}
 			return n.items.pop()
 		}
-		i = len(n.items)
+		i = n.items.len()
 	case removeMin:
 		if len(n.children) == 0 {
 			n.itemHasSuccessor.removeBitAt(0)
@@ -513,7 +431,7 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 		panic("invalid type")
 	}
 	// If we get to here, we have children.
-	if len(n.children[i].items) <= minItems {
+	if n.children[i].items.len() <= minItems {
 		return n.growChildAndRemove(i, item, minItems, typ)
 	}
 	child := n.mutableChild(i)
@@ -523,11 +441,11 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 	if found {
 		// The item exists at index 'i', and the child we've selected can give us a
 		// predecessor, since if we've gotten here it's got > minItems items in it.
-		out := n.items[i]
+		out := n.items.get(i)
 		// We use our special-case 'remove' call with typ=detachMax to pull the
 		// predecessor of item i (the rightmost leaf of our immediate left child)
 		// and set it into where we pulled the item from.
-		n.items[i] = child.remove(nil, minItems, detachMax)
+		n.items.set(i, child.remove(nil, minItems, detachMax))
 		n.itemHasSuccessor.setBitAt(i, 0)
 		n.childIsDense.setBitAt(i, child.isDense())
 		return out
@@ -535,7 +453,7 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 	// Final recursive call.  Once we're here, we know that the item isn't in this
 	// node and that the child is big enough to remove from.
 	if out := child.remove(item, minItems, typ); out != nil {
-		if i != 0 && typ != detachMax && n.items[i-1].Predecessor(out) {
+		if i != 0 && typ != detachMax && n.items.predecessor(i-1, out) {
 			n.itemHasSuccessor.setBitAt(i-1, 0)
 		}
 		n.childIsDense.setBitAt(i, child.isDense())
@@ -564,7 +482,7 @@ func (n *node) remove(item Item, minItems int, typ toRemove) Item {
 // whether we're in case 1 or 2), we'll have enough items and can guarantee
 // that we hit case A.
 func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) Item {
-	if i > 0 && len(n.children[i-1].items) > minItems {
+	if i > 0 && n.children[i-1].items.len() > minItems {
 		// Steal from left child
 		child := n.mutableChild(i)
 		stealFrom := n.mutableChild(i - 1)
@@ -573,12 +491,12 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 			0, n.itemHasSuccessor.bitAt(i-1),
 		)
 		n.itemHasSuccessor.setBitAt(
-			i-1, stealFrom.itemHasSuccessor.bitAt(len(stealFrom.items)-1),
+			i-1, stealFrom.itemHasSuccessor.bitAt(stealFrom.items.len()-1),
 		)
 
 		stolenItem := stealFrom.items.pop()
-		child.items.insertAt(0, n.items[i-1])
-		n.items[i-1] = stolenItem
+		child.items.insertAt(0, n.items.get(i-1))
+		n.items.set(i-1, stolenItem)
 
 		if len(stealFrom.children) > 0 {
 			child.childIsDense.insertBitAt(
@@ -589,21 +507,21 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 
 		n.childIsDense.setBitAt(i, child.isDense())
 		n.childIsDense.setBitAt(i-1, stealFrom.isDense())
-	} else if i < len(n.items) && len(n.children[i+1].items) > minItems {
+	} else if i < n.items.len() && n.children[i+1].items.len() > minItems {
 		// steal from right child
 		child := n.mutableChild(i)
 		stealFrom := n.mutableChild(i + 1)
 
 		child.itemHasSuccessor.setBitAt(
-			len(child.items), n.itemHasSuccessor.bitAt(i),
+			child.items.len(), n.itemHasSuccessor.bitAt(i),
 		)
 		n.itemHasSuccessor.setBitAt(
 			i, stealFrom.itemHasSuccessor.removeBitAt(0),
 		)
 
 		stolenItem := stealFrom.items.removeAt(0)
-		child.items = append(child.items, n.items[i])
-		n.items[i] = stolenItem
+		child.items.push(n.items.get(i))
+		n.items.set(i, stolenItem)
 
 		if len(stealFrom.children) > 0 {
 			child.childIsDense.setBitAt(
@@ -616,7 +534,7 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 		n.childIsDense.setBitAt(i, child.isDense())
 		n.childIsDense.setBitAt(i+1, stealFrom.isDense())
 	} else {
-		if i >= len(n.items) {
+		if i >= n.items.len() {
 			i--
 		}
 		child := n.mutableChild(i)
@@ -625,11 +543,11 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 		mergeChild := n.children.removeAt(i + 1)
 
 		child.itemHasSuccessor.setBitAt(
-			len(child.items),
+			child.items.len(),
 			n.itemHasSuccessor.removeBitAt(i),
 		)
 		child.itemHasSuccessor.setBitsAt(
-			len(child.items)+1,
+			child.items.len()+1,
 			mergeChild.itemHasSuccessor,
 		)
 		child.childIsDense.setBitsAt(
@@ -639,8 +557,8 @@ func (n *node) growChildAndRemove(i int, item Item, minItems int, typ toRemove) 
 		n.childIsDense.setBitAt(i, child.isDense())
 		n.childIsDense.removeBitAt(i + 1)
 
-		child.items = append(child.items, mergeItem)
-		child.items = append(child.items, mergeChild.items...)
+		child.items.push(mergeItem)
+		child.items.append(&mergeChild.items, 0)
 		child.children = append(child.children, mergeChild.children...)
 		n.cow.freeNode(mergeChild)
 	}
@@ -669,21 +587,21 @@ func (n *node) iterate(dir direction, start, stop Item, includeStart bool, hit b
 		if start != nil {
 			index, _ = n.items.find(start)
 		}
-		for i := index; i < len(n.items); i++ {
+		for i := index; i < n.items.len(); i++ {
 			if len(n.children) > 0 {
 				if hit, ok = n.children[i].iterate(dir, start, stop, includeStart, hit, iter); !ok {
 					return hit, false
 				}
 			}
-			if !includeStart && !hit && start != nil && !start.Less(n.items[i]) {
+			if !includeStart && !hit && start != nil && !less(start, n.items.get(i)) {
 				hit = true
 				continue
 			}
 			hit = true
-			if stop != nil && !n.items[i].Less(stop) {
+			if stop != nil && !less(n.items.get(i), stop) {
 				return hit, false
 			}
-			if !iter(n.items[i]) {
+			if !iter(n.items.get(i)) {
 				return hit, false
 			}
 		}
@@ -699,11 +617,11 @@ func (n *node) iterate(dir direction, start, stop Item, includeStart bool, hit b
 				index = index - 1
 			}
 		} else {
-			index = len(n.items) - 1
+			index = n.items.len() - 1
 		}
 		for i := index; i >= 0; i-- {
-			if start != nil && !n.items[i].Less(start) {
-				if !includeStart || hit || start.Less(n.items[i]) {
+			if start != nil && !less(n.items.get(i), start) {
+				if !includeStart || hit || less(start, n.items.get(i)) {
 					continue
 				}
 			}
@@ -712,11 +630,11 @@ func (n *node) iterate(dir direction, start, stop Item, includeStart bool, hit b
 					return hit, false
 				}
 			}
-			if stop != nil && !stop.Less(n.items[i]) {
+			if stop != nil && !less(stop, n.items.get(i)) {
 				return hit, false //	continue
 			}
 			hit = true
-			if !iter(n.items[i]) {
+			if !iter(n.items.get(i)) {
 				return hit, false
 			}
 		}
@@ -848,16 +766,16 @@ func (t *BTree) ReplaceOrInsert(item Item) Item {
 	}
 	if t.root == nil {
 		t.root = t.cow.newNode()
-		t.root.items = append(t.root.items, item)
+		t.root.items.push(item)
 		t.length++
 		return nil
 	} else {
 		t.root = t.root.mutableFor(t.cow)
-		if len(t.root.items) >= t.maxItems() {
+		if t.root.items.len() >= t.maxItems() {
 			item2, itemHasSuccessor, second := t.root.split(t.maxItems() / 2)
 			oldroot := t.root
 			t.root = t.cow.newNode()
-			t.root.items = append(t.root.items, item2)
+			t.root.items.push(item2)
 			t.root.itemHasSuccessor = bitmask(itemHasSuccessor)
 			t.root.children = append(t.root.children, oldroot, second)
 			// rightmost subtree is sparse by definition
@@ -890,12 +808,12 @@ func (t *BTree) DeleteMax() Item {
 }
 
 func (t *BTree) deleteItem(item Item, typ toRemove) Item {
-	if t.root == nil || len(t.root.items) == 0 {
+	if t.root == nil || t.root.items.len() == 0 {
 		return nil
 	}
 	t.root = t.root.mutableFor(t.cow)
 	out := t.root.remove(item, t.minItems(), typ)
-	if len(t.root.items) == 0 && len(t.root.children) > 0 {
+	if t.root.items.len() == 0 && len(t.root.children) > 0 {
 		oldroot := t.root
 		t.root = t.root.children[0]
 		t.cow.freeNode(oldroot)
@@ -1064,18 +982,4 @@ func (n *node) reset(c *copyOnWriteContext) bool {
 		}
 	}
 	return c.freeNode(n) != ftFreelistFull
-}
-
-// Int implements the Item interface for integers.
-type Int int
-
-// Less returns true if int(a) < int(b).
-func (a Int) Less(b Item) bool {
-	return a < b.(Int)
-}
-
-// Predecessor returns true if int(a) < int(b) && int(a) + 1 == int(b)
-func (a Int) Predecessor(b Item) bool {
-	lhs, rhs := int(a), int(b.(Int))
-	return lhs < rhs && lhs+1 == rhs
 }
